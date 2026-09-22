@@ -1,4 +1,428 @@
-Below is the complete rewritten set using Jevy consistently. I also tightened the prompts specifically for your situation: small/cheap Qwen model, SQLite first, low token usage, unlimited/reasonable repeated LLM calls, deterministic logic wherever possible, self-repair, fuzzy terminology, regex/pattern understanding, strong grounding, and zero fabricated analytics.
+
+Before starting Phase 4, perform Phase 3.5: Real Database Discovery & Semantic Validation for Jevy.
+
+IMPORTANT CONTEXT
+
+Phases 1–3 have already been implemented.
+
+Do NOT rebuild those phases.
+
+Instead, validate and improve what already exists by directly exploring the REAL SQLite database.
+
+You have the ability to execute SQL queries against the database.
+
+USE THAT CAPABILITY ACTIVELY.
+
+Do not understand the database only from:
+
+* application code
+* TypeScript interfaces
+* ORM models
+* migrations
+* existing schema files
+* previously generated Jevy metadata
+
+The actual SQLite database and its actual stored values are the primary source of truth.
+
+All exploration in this phase must be READ-ONLY.
+
+==================================================
+
+1. DISCOVER THE REAL DATABASE
+    ==================================================
+
+Execute SQL/SQLite metadata queries to inspect:
+
+* every table
+* every view
+* every column
+* column types
+* primary keys
+* foreign keys
+* indexes
+* row counts
+* NULL patterns where useful
+* low-cardinality distinct values
+* representative rows
+* date ranges
+* useful numeric ranges
+
+Use appropriate mechanisms such as:
+
+sqlite_master
+PRAGMA table_info(…)
+PRAGMA foreign_key_list(…)
+PRAGMA index_list(…)
+
+and safe SELECT queries.
+
+Do NOT dump huge tables.
+
+Use:
+LIMIT
+COUNT
+DISTINCT
+GROUP BY
+MIN
+MAX
+
+and targeted sampling.
+
+==================================================
+2. INSPECT ACTUAL VALUES
+
+This is extremely important.
+
+For columns that Jevy may filter/search/group by, inspect the ACTUAL values stored in the database.
+
+Examples might include:
+
+operating system
+environment
+application
+estate
+server status
+severity
+vulnerability status
+owner
+platform
+region
+business unit
+technology
+server type
+
+Do not assume actual field names. Discover them.
+
+For example, if an OS-related column exists, determine whether values actually look like:
+
+Red Hat Enterprise Linux 8
+RHEL 8
+RedHat
+Linux-RHEL
+Windows Server 2019
+
+or something completely different.
+
+Jevy’s terminology system must be based on REAL values.
+
+==================================================
+3. FIND BUSINESS VOCABULARY
+
+Use actual data to identify useful terminology.
+
+Example:
+
+If actual values show:
+
+PROD
+UAT
+DEV
+
+then determine that natural-language terms such as:
+
+production
+prod
+production environment
+
+may map to PROD.
+
+If actual OS values contain:
+
+Red Hat Enterprise Linux Server 8.9
+
+then concepts such as:
+
+Red Hat
+redhat
+RHEL
+RHEL 8
+Red Hat Linux
+
+should potentially resolve against those values.
+
+Do not blindly create aliases.
+
+Validate them against actual database content.
+
+==================================================
+4. DISCOVER IMPLICIT RELATIONSHIPS
+
+Do not rely only on declared foreign keys.
+
+Inspect whether fields such as:
+
+server_id
+application_id
+app_id
+estate_id
+vulnerability_id
+hostname
+owner_id
+
+or equivalent discovered fields occur across tables.
+
+Where appropriate, execute read-only queries to determine whether these columns actually contain matching values.
+
+Classify relationships as:
+
+DECLARED
+INFERRED_HIGH_CONFIDENCE
+INFERRED_POSSIBLE
+UNKNOWN
+
+Do not present inferred relationships as guaranteed foreign keys.
+
+==================================================
+5. VALIDATE PHASE 1 SEMANTIC CATALOG
+
+Compare the semantic catalog created in Phase 1 against the real database.
+
+Check:
+
+* missing tables
+* missing columns
+* incorrect types
+* stale metadata
+* incorrect descriptions
+* missing relationships
+* incorrect relationships
+* missing categorical values
+* incorrect aliases
+* misleading business definitions
+
+Update generated metadata where appropriate.
+
+Do NOT overwrite manually curated business definitions without explicitly identifying the conflict.
+
+==================================================
+6. VALIDATE PHASE 2 TERMINOLOGY RESOLUTION
+
+Test the Phase 2 resolver against actual database values.
+
+Test realistic variations discovered from the database.
+
+Especially test:
+
+abbreviations
+partial names
+case differences
+spacing differences
+punctuation differences
+version numbers
+common business terminology
+substring searches
+prefix searches
+suffix searches
+
+Example concept:
+
+“Red Hat”
+
+should resolve based on what actually exists in this database rather than what we assume exists.
+
+==================================================
+7. VALIDATE PHASE 3 SQL AGENT
+
+Now use the REAL database to test the SQL-only Jevy pipeline.
+
+Generate a useful collection of questions based on the data that actually exists.
+
+Include:
+
+simple counts
+filters
+multiple filters
+GROUP BY
+ORDER BY
+top-N
+aggregations
+single-table questions
+multi-table questions
+joins
+business aliases
+partial matches
+pattern searches
+
+Execute the generated SQL.
+
+Do not merely inspect whether the SQL looks correct.
+
+Verify it against actual results.
+
+==================================================
+8. TEST THE RED HAT-TYPE PROBLEM
+
+Create tests equivalent to:
+
+“How many Red Hat servers are there?”
+
+But use the REAL OS field and REAL values discovered from this database.
+
+Test variations such as:
+
+Red Hat
+redhat
+RHEL
+RHEL + discovered version
+partial OS name
+
+The expected pipeline is:
+
+user terminology
+→ terminology resolver
+→ actual database values/pattern
+→ relevant schema
+→ SQL
+→ execute
+→ real result
+
+Jevy should NOT require the user to know the exact database string.
+
+==================================================
+9. DISCOVER DATA QUALITY PROBLEMS
+
+While exploring, identify issues that could confuse Jevy.
+
+Examples:
+
+PROD vs Prod vs prod
+
+RedHat vs Red Hat
+
+NULL vs empty string
+
+duplicate identifiers
+
+trailing whitespace
+
+inconsistent hostnames
+
+different date formats
+
+multiple names for the same concept
+
+unexpected categorical values
+
+Do NOT modify company data.
+
+Instead, record these problems so Jevy’s normalization/resolution layer can account for them.
+
+==================================================
+10. CREATE A COMPACT DATA PROFILE
+
+Jevy must NOT send all discovered information to Qwen.
+
+Create/update a compact machine-readable profile.
+
+For each important field retain useful information such as:
+
+{
+“table”: “servers”,
+“column”: “os_name”,
+“type”: “TEXT”,
+“semantic_type”: “operating_system”,
+“searchable”: true,
+“categorical”: true,
+“example_values”: […],
+“aliases”: […],
+“relationships”: […]
+}
+
+Keep this compact.
+
+The complete discovery information can remain available internally, but Qwen should receive only retrieved relevant portions.
+
+==================================================
+11. DO NOT WASTE QWEN TOKENS
+
+Remember:
+
+Jevy currently uses a small inexpensive Qwen model.
+
+The purpose of this database discovery is specifically to REMOVE work from the model.
+
+The application should already know:
+
+what tables exist
+what columns exist
+what relationships exist
+what common values exist
+what common aliases mean
+what join paths are available
+
+before Qwen is called.
+
+Qwen should reason over a small relevant subset.
+
+==================================================
+12. CREATE DATABASE EXPLORATION UTILITIES
+
+If they do not already exist, create reusable READ-ONLY utilities so developers/Jevy can inspect:
+
+schema
+table metadata
+sample values
+distinct categorical values
+relationships
+data profiles
+
+Do not make Copilot manually rediscover everything every time.
+
+The discovery system should be reusable when the database schema/data evolves.
+
+==================================================
+13. FINAL VALIDATION
+
+Before completing Phase 3.5, run real database tests through the existing Jevy Phase 3 pipeline.
+
+Report:
+
+Tables discovered
+Columns discovered
+Relationships discovered
+Inferred relationships
+Categorical fields profiled
+Aliases validated
+Data-quality issues found
+Phase 1 metadata corrections
+Phase 2 resolver corrections
+Phase 3 SQL issues discovered
+Phase 3 SQL issues fixed
+
+Also provide several REAL test examples:
+
+QUESTION
+↓
+RESOLVED TERMINOLOGY
+↓
+SELECTED TABLES/COLUMNS
+↓
+GENERATED SQL
+↓
+ACTUAL DATABASE RESULT
+↓
+JEVY ANSWER
+
+IMPORTANT:
+
+Do not proceed to Phase 4 automatically.
+
+Do not rebuild Jevy.
+
+Do not modify unrelated application functionality.
+
+Do not modify database data.
+
+The objective is to ensure Phases 1–3 accurately reflect the REAL database before we build Jevy’s self-healing SQL loop in Phase 4.
+
+
+
+
+
+
+
+
+ is the complete rewritten set using Jevy consistently. I also tightened the prompts specifically for your situation: small/cheap Qwen model, SQLite first, low token usage, unlimited/reasonable repeated LLM calls, deterministic logic wherever possible, self-repair, fuzzy terminology, regex/pattern understanding, strong grounding, and zero fabricated analytics.
 
 Use these one phase at a time. Do not give all phases to Claude/Copilot at once.
 
