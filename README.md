@@ -1,1683 +1,885 @@
-# Analytics Engine Performance Optimization Playbook
+You are working inside my existing analytics application repository.
 
-## Goal
+I want you to build a **small, isolated WrenAI-based chatbot POC** that proves whether Wren's semantic/context capabilities can make our existing Javi-style data chatbot much stronger.
 
-The goal is not simply to make queries fast.
+This is NOT a migration.
+This is NOT a replacement of my current application.
+This is NOT a full WrenAI deployment.
+This is NOT a request to run all of WrenAI.
 
-The goal is to make the entire analytics experience feel immediate and native even when the underlying dataset grows to millions or tens of millions of records.
+The goal is very narrow:
 
-The user should feel like they are interacting with Excel or Qlik Sense:
+**Take only the useful WrenAI pieces needed for a powerful data chatbot, connect them to our real DuckDB data and our existing internal LLM API, and expose a simple local chat UI on a separate port so I can test asking arbitrary questions about our data.**
 
-- filters react quickly
-- tables scroll smoothly
-- searches feel immediate
-- charts update quickly
-- the page never freezes
-- changing one filter does not reload the entire application
-- the amount of data in storage should not directly determine how much data reaches the browser
+The chatbot should be able to:
 
-The most important principle is:
+- understand what data exists
+- understand tables and fields
+- understand relationships
+- retrieve only relevant schema/context
+- generate read-only SQL
+- execute SQL against our real data
+- inspect results
+- retry/repair when SQL fails
+- answer from real evidence
+- use semantic/business context where available
+- handle aliases and natural-language terminology
+- preserve conversational context
+- avoid hallucinating numbers
+- answer complex cross-table analytical questions where the data supports them
 
-**The UI should work with a small window into the data, while DuckDB works with the complete dataset.**
-
----
-
-# 1. Never Load the Entire Dataset Into the Browser
-
-This is probably the most important optimization.
-
-Imagine there are 5 million server/vulnerability records.
-
-The wrong approach is:
-
-5 million records
-→ backend
-→ JSON
-→ browser memory
-→ frontend filtering
-→ frontend sorting
-→ table
-
-Even if DuckDB returns those rows quickly, everything after DuckDB becomes expensive.
-
-The browser now has to:
-
-- receive a huge HTTP response
-- parse a huge JSON document
-- allocate memory
-- keep millions of JavaScript objects
-- filter them
-- sort them
-- render them
-
-The application will eventually become slow regardless of how fast DuckDB is.
-
-Instead:
-
-5 million records stay in DuckDB.
-
-The browser asks:
-
-"Give me the first 100 records matching my current view."
-
-DuckDB returns 100.
-
-The user scrolls.
-
-The application requests another small window.
-
-The important point is that:
-
-5 million rows should not feel dramatically different from 50 million rows to the browser.
-
-The backend handles scale.
-
-### Example
-
-Suppose your vulnerabilities table contains:
-
-8,400,000 rows.
-
-The user opens the Vulnerabilities page.
-
-Do NOT send 8.4 million rows.
-
-Instead initially request:
-
-- total vulnerability count
-- critical count
-- high count
-- summary chart data
-- first 100 table rows
-
-The page may receive perhaps a few kilobytes instead of hundreds of megabytes.
-
-### Target behavior
-
-Opening the page should never mean:
-
-"download the dataset."
-
-It should mean:
-
-"load the current view."
+Do not build unrelated Wren features.
 
 ---
 
-# 2. Virtualize the Table
+# 1. KEEP THE POC COMPLETELY ISOLATED
 
-Even if you only have 10,000 rows in the browser, rendering 10,000 HTML table rows is unnecessary.
+Create a new root-level directory such as:
 
-A user may physically see perhaps 30–60 rows on the screen.
+`/wren-chat-poc/`
 
-A good data grid renders roughly what the user can see plus a small buffer.
+Add it to the ROOT `.gitignore` before downloading/installing anything:
 
-For example:
+`/wren-chat-poc/`
 
-Dataset result:
+Verify with:
 
-50,000 matching records.
+`git status`
 
-Visible screen:
+The POC must not be committed to our repository.
 
-rows 450–490.
+Do not stage or commit:
 
-Browser may actually render:
+- Wren source
+- virtual environments
+- node_modules
+- databases
+- caches
+- logs
+- generated files
+- downloaded models
+- secrets
+- environment files
 
-rows 420–520.
+Do not modify my existing application unless a tiny read-only integration helper is absolutely required.
 
-Everything else exists logically but isn't represented by thousands of DOM elements.
-
-This is called virtualization.
-
-### Why this matters
-
-Without virtualization:
-
-50,000 rows might mean:
-
-50,000 DOM nodes × many columns.
-
-Scrolling becomes heavy.
-
-The browser spends time on:
-
-- layout
-- painting
-- memory management
-- DOM updates
-
-With virtualization, the browser may only render around 100 rows regardless of dataset size.
-
-### Desired experience
-
-The scrollbar can represent millions of records.
-
-But the browser only renders what the user currently sees.
-
-This is how you get the feeling:
-
-"I am scrolling through a giant spreadsheet."
-
-without actually rendering the giant spreadsheet.
+My existing application must continue working exactly as before.
 
 ---
 
-# 3. Filtering Must Happen in DuckDB
+# 2. USE ONLY THE OFFICIAL WRENAI REPOSITORY
 
-Suppose the user has:
+Use:
 
-2 million server records.
+`Canner/WrenAI`
 
-They select:
+Do not use forks.
 
-Environment = PROD
+Before implementation:
 
-Then:
+- inspect the current official repository
+- record the exact commit/version used
+- verify which portions are Apache 2.0 licensed
+- use only code/components whose license allows this POC
+- do not use unrelated future modules with different licenses without explicitly reporting them
 
-Severity = Critical
+Prefer the current maintained Wren core/context components.
 
-Then:
-
-OS = Red Hat
-
-The wrong model is:
-
-Load 2 million records
-→ JavaScript filters PROD
-→ JavaScript filters Critical
-→ JavaScript filters Red Hat.
-
-The correct model is:
-
-User selects filters
-→ send filter definition to backend
-→ DuckDB filters dataset
-→ return only matching view.
-
-DuckDB is designed for analytical filtering and aggregation.
-
-Let it do that job.
-
-### Example
-
-Original dataset:
-
-5,000,000 rows.
-
-After:
-
-PROD
-
-1,800,000.
-
-After:
-
-Critical
-
-62,000.
-
-After:
-
-Red Hat
-
-8,700.
-
-The browser still does not need 8,700 rows immediately.
-
-It might receive:
-
-first 100 rows
-+
-count = 8,700.
-
-If the user changes Critical → High, DuckDB evaluates the new filter and gives the new result.
+Do NOT deploy the old full GenBI product unless it turns out to be technically unavoidable.
 
 ---
 
-# 4. Treat Every UI State as a Query
+# 3. DO NOT RUN THE ENTIRE WREN APPLICATION
 
-This is a useful way to think about the whole engine.
+This is extremely important.
 
-The page itself represents a query state.
+WrenAI contains many things we do not need.
 
-For example:
+I only want functionality that contributes directly to:
 
-Environment:
-PROD
+**natural language → relevant data context → SQL/tool execution → verified answer**
 
-Severity:
-Critical
+Inspect Wren and identify the minimum useful components.
 
-OS:
-Red Hat
+Potentially useful:
 
-Search:
-payments
+- metadata/schema representation
+- semantic models
+- relationships
+- context retrieval
+- instructions/business definitions
+- NL-to-SQL support
+- SQL validation/transformation
+- query memory/example retrieval
+- DuckDB support
+- any lightweight reasoning/context utilities
 
-Sort:
-incident_count descending
+Probably NOT needed:
 
-Page:
-first 100
+- full Wren UI
+- unrelated administration screens
+- full BI dashboard stack
+- unrelated connectors
+- enterprise-style features
+- demo/sample applications
+- telemetry if optional
+- unnecessary background services
+- unrelated authentication systems
+- visualization systems
+- anything not required for the chat POC
 
-Instead of storing a giant frontend dataset, the frontend stores this small state.
+Do not blindly start every Wren service.
 
-That state produces the result.
-
-So your system becomes:
-
-USER INTERACTION
-
-↓
-
-QUERY STATE
-
-↓
-
-DUCKDB
-
-↓
-
-RESULT WINDOW
-
-↓
-
-UI
-
-This is similar in spirit to analytics products where selections determine what the analytical engine needs to calculate.
-
-Qlik visualizations are built around dimensions and measures, with its engine producing the data required for the current visualization rather than simply handing the frontend the complete underlying dataset.
+First determine the smallest architecture that works.
 
 ---
 
-# 5. Charts Must Use Aggregated Data
+# 4. IF POSSIBLE, USE WREN AS A LIBRARY
 
-Charts almost never need raw records.
+Prefer:
 
-Suppose:
+our lightweight POC service
+→ Wren core/library
+→ our LLM
+→ our DuckDB
 
-2.5 million vulnerabilities.
+rather than:
 
-A severity chart doesn't need 2.5 million objects.
+our app
+→ giant Wren deployment
+→ many services
+→ many containers.
 
-It needs something like:
+If the current Wren core can be consumed through its Python package/library, use that.
 
-Critical → 14,821
+If a small standalone Python service is the cleanest approach, create one inside `wren-chat-poc`.
 
-High → 42,320
+Our existing application is primarily Node-based, but the POC can run a separate lightweight Python service if Wren requires Python.
 
-Medium → 81,994
-
-Low → 103,221
-
-That's four rows.
-
-The browser receives four rows.
-
-DuckDB performs the aggregation.
-
-### Another example
-
-User asks:
-
-"Vulnerabilities by month for the last two years."
-
-Raw data:
-
-1,400,000 vulnerabilities.
-
-Chart data:
-
-24 monthly values.
-
-Send the 24 points.
-
-Not 1.4 million records.
-
-### General rule
-
-A visualization should receive the smallest possible dataset capable of rendering that visualization.
-
-This is one of the biggest performance improvements you can make.
+Do not rewrite Wren in Node.
 
 ---
 
-# 6. Precompute Expensive Dashboard Metrics
+# 5. INSPECT OUR EXISTING APPLICATION
 
-Some dashboard metrics may be requested constantly.
+Before connecting anything, inspect the current repository.
 
-For example:
+Understand:
 
-Total servers
+- DuckDB location/configuration
+- existing data-loading code
+- schema
+- major tables
+- relationships
+- current analytics modules
+- Javi/chat implementation
+- existing LLM API wrapper/client
+- model configuration
+- authentication headers required by our internal LLM
+- existing MCP/tools if present
+- AWS-backed data sources
+- any existing semantic metadata or schema catalog
+- Excel ingestion
+- configuration/environment patterns
 
-Production servers
+Do not assume anything based only on filenames.
 
-Critical vulnerabilities
-
-Unsupported OS count
-
-Applications affected
-
-Open incidents
-
-If those calculations repeatedly scan millions of records every time someone opens the page, you're wasting computation.
-
-For metrics that are expensive and repeatedly requested, consider preparing summary data.
-
-Think of:
-
-Raw data
-
-↓
-
-Prepared analytics summaries
-
-↓
-
-Dashboard
-
-Then detailed drill-down still queries the raw data when necessary.
-
-### Scenario
-
-Dashboard home page gets opened 500 times per day.
-
-Every load calculates:
-
-critical vulnerabilities across 20 million records.
-
-Instead, maintain a summary representing the latest calculation.
-
-Home dashboard reads the summary.
-
-When the user drills into:
-
-"Show these 18,492 critical vulnerabilities"
-
-then query the detailed dataset.
-
-Qlik's performance guidance similarly recommends pre-calculating measures when appropriate rather than repeatedly performing expensive calculations at visualization time.
+Use actual code and read-only database exploration.
 
 ---
 
-# 7. Cache Repeated Results
+# 6. USE OUR EXISTING INTERNAL LLM
 
-Analytics users repeatedly perform similar actions.
+Do NOT call public OpenAI, Anthropic, Gemini or any external LLM.
 
-For example:
+We already have an internal company LLM API.
 
-Everyone opens:
+Inspect how the root application calls it.
 
-PROD dashboard.
+Reuse that same configuration and API pattern wherever practical.
 
-Everyone looks at:
+The internal API behaves similarly to an OpenAI-style endpoint.
 
-Critical vulnerabilities.
+Determine whether Wren expects:
 
-People repeatedly select:
+- OpenAI client format
+- chat completions
+- responses API
+- tool/function calling
+- structured output
+- streaming
 
-Windows
+Build the smallest adapter necessary.
 
-Red Hat
+Do NOT expose credentials.
 
-Production
+Do not duplicate secrets into source code.
 
-US region.
+Use existing environment/configuration patterns.
 
-You don't necessarily need DuckDB to recompute exactly the same result every time.
+If the Wren library has a clean provider abstraction, implement our internal provider there.
 
-Cache suitable results.
+If not, create a thin adapter around the model invocation.
 
-### Example
+---
 
-User A:
+# 7. CONNECT TO THE REAL DUCKDB
 
-PROD + Critical
+Use the existing real DuckDB database.
 
-Result:
+READ ONLY.
 
-18,422.
+Do not modify tables.
 
-Thirty seconds later User B requests:
+Do not create/drop/update/delete production data.
 
-PROD + Critical.
+If possible, open it explicitly in read-only mode.
 
-If underlying data hasn't changed, reuse the result.
+Inspect:
 
-### Important distinction
+- tables
+- columns
+- data types
+- approximate row counts
+- common values
+- relationships
+- IDs/keys
+- dates
+- business terminology
 
-Not everything should be cached equally.
+Create or generate a semantic representation for Wren from the actual schema.
 
-Good candidates:
+Do not manually invent schema definitions.
 
-- dashboard summaries
-- dropdown values
-- common aggregations
-- common filter combinations
-- chart datasets
-- metadata
+---
 
-Less useful:
+# 8. CONTINUOUSLY UNDERSTAND THE DATABASE
 
-- highly unique searches
-- constantly changing real-time information
+One of the main reasons I am evaluating Wren is that I do not want the chatbot to have stale knowledge of the database.
 
-### Cache invalidation
+Implement a lightweight metadata-refresh mechanism.
 
-The cache must understand when data changes.
+On startup:
 
-If your ingestion process loads new records, relevant cached analytical results should expire.
+- inspect the current database schema
+- compare it to the stored semantic/schema cache
+- update added/removed/changed tables or columns
+
+During operation, if a query references data the agent cannot resolve:
+
+- inspect relevant metadata again
+- discover values/fields when appropriate
+- refresh context
+- retry
+
+Do NOT re-scan every row of every table on every message.
 
 The goal is:
 
-same question + same data
-→ avoid unnecessary repeated work.
+**schema knowledge stays current without making every chat slow.**
+
+Keep:
+
+- table metadata
+- field descriptions where available
+- relationships
+- aliases
+- business definitions
+- useful example values
+
+cached locally.
+
+Refresh intelligently.
 
 ---
 
-# 8. Make Search Feel Instant
+# 9. DATA UNDERSTANDING
 
-Search can easily ruin an otherwise fast analytics page.
+The chatbot needs to understand our actual business language.
 
-Suppose the user types:
+Examples may include:
 
-R
+- Server Estate
+- VA
+- vulnerabilities
+- incidents
+- applications
+- environments
+- operating systems
+- owners
+- support state
+- lifecycle state
+- production
+- dev
+- UAT
+- Red Hat
+- RHEL
 
-Re
+Do not hard-code these examples unless they truly exist.
 
-Red
+Discover terminology from:
 
-Red H
+- existing application labels
+- analytics code
+- DB values
+- schema
+- documentation/comments
+- existing Javi metadata
 
-Red Ha
+Create aliases only where evidence supports them.
 
-Red Hat
+Example:
 
-You don't want six expensive searches happening simultaneously.
+If the DB contains:
 
-Instead, wait briefly until the user pauses typing.
+`Red Hat Enterprise Linux`
 
-Then execute the search.
+and users commonly say:
 
-This is usually called debouncing.
+`Red Hat`
+or
+`RHEL`
 
-### Scenario
-
-User starts typing:
-
-"payments-server"
-
-Instead of searching on every keystroke:
-
-wait a short moment after typing stops
-
-→ run one search
-
-→ return results.
-
-### Also cancel old searches
-
-Suppose:
-
-Search 1 = Red
-
-Search 2 = Red Hat
-
-Search 1 takes longer.
-
-Without cancellation:
-
-Red Hat results appear.
-
-Then the old Red request finishes.
-
-Suddenly the UI replaces the correct results with old results.
-
-That's terrible UX.
-
-Older requests should become irrelevant when a newer user action occurs.
+the chatbot should resolve those safely.
 
 ---
 
-# 9. Cancel Old Queries
+# 10. CHAT AGENT LOOP
 
-This applies beyond search.
+The POC chatbot should use an agent loop rather than a single text-to-SQL call.
 
-Suppose a user clicks:
+Recommended behavior:
 
-PROD
+USER QUESTION
 
-then immediately:
+↓
 
-Critical
+Understand what the user wants
 
-then immediately:
+↓
 
-Red Hat.
+Determine whether the answer requires database evidence
 
-You may generate three analytical requests.
+↓
 
-If the user has already moved on, there is little value in letting outdated work control the UI.
+Retrieve relevant semantic/schema context
 
-The system should know:
+↓
 
-Request A is stale.
+Resolve terminology/entities/values if needed
 
-Request B is stale.
+↓
 
-Request C represents the current UI state.
+Plan a query
 
-Only C matters.
+↓
 
-This creates the feeling that the application follows the user rather than lagging behind them.
+Generate read-only SQL
 
----
+↓
 
-# 10. Avoid Full Page Reloads
+Validate SQL
 
-A dashboard should not behave like an old web page.
+↓
 
-Changing:
+Execute against DuckDB
 
-Severity
+↓
 
-should not reload:
+Inspect result
 
-header
-navigation
-user profile
-every chart
-every table
-every unrelated metric
+↓
 
-Only the components affected by that selection should update.
+If SQL fails or appears wrong:
+- inspect the error
+- inspect schema/value context
+- repair
+- retry
 
-### Example
+↓
 
-User changes:
+Verify that the result actually supports the answer
 
-Environment:
-ALL → PROD.
+↓
 
-Affected:
+Generate concise natural-language answer
 
-server count
-OS distribution
-vulnerability chart
-server table
+The LLM should be allowed several focused reasoning/tool steps.
 
-Possibly unaffected:
-
-static documentation
-navigation
-application metadata.
-
-Update only what matters.
-
-This also creates a much smoother visual experience.
+Do not require one giant model prompt containing the entire database.
 
 ---
 
-# 11. Load Important Things First
+# 11. READ-ONLY SQL SAFETY
 
-Not every piece of the dashboard needs to arrive simultaneously.
+Only allow analytical/read operations.
 
-Imagine a page contains:
+Allow:
 
-5 KPI cards
+- SELECT
+- CTEs
+- joins
+- grouping
+- aggregation
+- filters
+- sorting
+- window functions where appropriate
 
-6 charts
+Block:
 
-one huge table.
+- INSERT
+- UPDATE
+- DELETE
+- DROP
+- ALTER
+- CREATE that changes persistent production state
+- ATTACH arbitrary external databases unless explicitly required and safe
+- filesystem/network side effects
 
-The user cares about the page becoming useful quickly.
+Validate queries before executing them.
 
-A good load sequence might be:
-
-First:
-
-KPI summaries.
-
-Then:
-
-major charts.
-
-Then:
-
-table rows.
-
-Then:
-
-secondary analytics.
-
-The screen starts feeling useful quickly even if all computation hasn't finished simultaneously.
-
-### Bad experience
-
-Blank page for four seconds.
-
-Then everything appears.
-
-### Better experience
-
-Within a short moment:
-
-Server count
-Critical vulnerabilities
-Applications affected
-
-appear.
-
-Then charts populate.
-
-Then the detailed grid becomes available.
-
-Perceived speed matters almost as much as raw speed.
+Prefer a strict read-only database connection in addition to SQL validation.
 
 ---
 
-# 12. Separate Overview Data From Detail Data
+# 12. DON'T HALLUCINATE ANSWERS
 
-This is extremely useful for your analytics engine.
+For factual internal-data questions:
 
-You really have two kinds of usage.
+If the answer depends on the database, the chatbot must obtain evidence.
 
-### Overview
+Never make up:
 
-"How is the estate doing?"
+- counts
+- percentages
+- server names
+- incidents
+- vulnerabilities
+- dates
+- owners
+- rankings
 
-Needs:
+If the data is unavailable, say so clearly.
 
-totals
-trends
-distributions
-KPIs.
-
-### Detail
-
-"Show me every Red Hat production server with critical vulnerabilities."
-
-Needs:
-
-individual records.
-
-These shouldn't necessarily use the exact same retrieval strategy.
-
-Overview should favor:
-
-aggregated/prepared data.
-
-Detail should favor:
-
-filtered DuckDB queries.
-
-Trying to make one giant dataset satisfy every UI component often makes applications slower.
+If the question cannot be answered from current sources, explain what information is missing.
 
 ---
 
-# 13. Use a Good Analytical Data Model
+# 13. QUERY REPAIR
 
-Qlik explicitly recommends efficient data models and warns that unnecessary model complexity can hurt performance. Its guidance discusses appropriate granularity, removing unnecessary fields, simplifying relationships, and avoiding problematic associations.
+If a query fails, do not immediately tell the user it failed.
 
-For your engine, think:
+Allow bounded repair attempts.
 
-What does the analytics actually need?
+Example:
 
-Don't carry unnecessary information everywhere.
+attempt 1:
+wrong column
 
-For example, perhaps your core analytics revolves around:
+→ inspect schema
 
-Servers
+attempt 2:
+correct column but wrong value
 
-Applications
+→ inspect representative/distinct values
 
-Vulnerabilities
+attempt 3:
+execute corrected query
 
-Incidents
+Stop after a sensible retry limit.
 
-Owners
+Expose the final answer, not the internal reasoning chain.
 
-Dates
+---
 
-Environments.
+# 14. SUCCESSFUL QUERY MEMORY
 
-You should have clean relationships between them.
+If Wren has a lightweight built-in mechanism for confirmed question-to-SQL examples, use it.
 
-The cleaner the data relationships are, the easier it is for both:
+When a query is successful and clearly matches the question, store a compact reusable example locally for future context retrieval.
 
-DuckDB
+Do not blindly memorize failed or questionable queries.
 
+This should improve future answers such as:
+
+"How many production servers?"
+
+and related follow-ups.
+
+Keep this local to the POC.
+
+---
+
+# 15. MULTI-TABLE QUESTIONS
+
+Test questions that require joins.
+
+The chatbot should discover and use valid relationships.
+
+Do not allow the model to randomly invent joins merely because column names look similar.
+
+Prefer:
+
+- declared relationships
+- actual key evidence
+- existing analytics joins
+- validated schema metadata
+
+If relationship confidence is weak, inspect the data/schema before joining.
+
+---
+
+# 16. MCP / TOOL HOOK
+
+The first POC is primarily DuckDB.
+
+However, our real Javi eventually needs MCP/API tools.
+
+Design the agent layer so database SQL is just one tool/capability.
+
+Create a clean placeholder/interface for additional tools such as:
+
+- internal API tool
+- AWS lookup
+- MCP tools
+
+Do not implement everything unless an existing lightweight tool can be connected easily.
+
+The architecture should permit:
+
+question
+→ choose SQL
+or
+→ choose tool
+or
+→ combine multiple sources
+
+later.
+
+---
+
+# 17. CREATE A MINIMAL CHAT UI
+
+Do NOT use the full Wren user interface.
+
+Build a very small test page.
+
+It should contain:
+
+- chat history
+- text input
+- send button
+- loading/working indicator
+- answer rendering
+
+Optionally add:
+
+**Debug Details**
+
+for development.
+
+Debug Details may contain:
+
+- question
+- relevant schema/context selected
+- tools used
+- SQL generated
+- query parameters
+- execution duration
+- row count/result summary
+- errors
+- retry count
+- final evidence source
+
+Do NOT expose hidden chain-of-thought.
+
+---
+
+# 18. RUN ON A DIFFERENT LOCAL PORT
+
+Run the POC independently from the existing app.
+
+Automatically inspect which ports are already in use.
+
+Choose a safe unused local port.
+
+For example:
+
+existing application → unchanged
+
+Wren Chat POC → separate port
+
+Report the exact endpoint when finished.
+
+Do not change my current application's port.
+
+---
+
+# 19. MINIMIZE DEPENDENCIES
+
+Before installing anything, inspect requirements.
+
+Create a dependency table:
+
+dependency
+purpose
+required/optional
+already available?
+alternative?
+
+If a Wren dependency exists only because of unrelated Wren functionality, do not install it if the chat POC does not require it.
+
+The objective is to determine the **minimum viable Wren-powered chatbot stack**.
+
+If the complete official Wren package pulls unnecessary dependencies but still installs cleanly, that may be acceptable for the first test.
+
+However, do not start unrelated Wren services.
+
+Avoid Docker unless the core genuinely cannot run cleanly without it.
+
+I specifically want to avoid another large Docker-heavy application.
+
+---
+
+# 20. REMOVE OR IGNORE UNUSED WREN PIECES
+
+Do NOT immediately delete upstream code.
+
+First identify what is actually used.
+
+For the POC, prefer:
+
+- importing only required modules
+- not starting unnecessary components
+- excluding optional extras
+
+rather than making a giant destructive fork.
+
+After the POC works, document:
+
+**Required Wren components**
 and
+**Unused Wren components**
 
-Javi
+If we later decide to build a stripped internal version, we can do that cleanly.
 
-to understand them.
-
-### Example
-
-Instead of having:
-
-server name appearing differently in seven tables
-
-try to have a stable server identifier connecting them.
-
-That reduces both query complexity and AI confusion.
+For this POC, functionality and isolation matter more than physically deleting every unused upstream file.
 
 ---
 
-# 14. Don't Keep More Detail Than Necessary in Every Analytical Layer
+# 21. PERFORMANCE
 
-Suppose timestamps are:
+The chatbot must feel reasonably fast.
 
-2026-09-29 23:18:43.482918
+Measure separately:
 
-But most dashboard charts only care about:
+- context retrieval
+- LLM planning
+- SQL generation
+- SQL execution
+- retries
+- final answer generation
+- total latency
 
-day
+Do not blame DuckDB if most latency is coming from the LLM.
 
-week
+Avoid repeatedly sending huge schema dumps.
 
-month.
+Use focused context retrieval.
 
-You don't always want every analytical calculation working at microsecond precision.
+Cache stable metadata.
 
-Keep raw detail where needed.
-
-But create useful analytical representations.
-
-For example:
-
-incident_day
-
-incident_month
-
-incident_year.
-
-Qlik similarly recommends using appropriate data granularity rather than maintaining unnecessary precision for every analytical workload.
+Reuse DB connections where safe.
 
 ---
 
-# 15. Take Advantage of DuckDB's Columnar Nature
+# 22. TEST WITH REAL QUESTIONS
 
-DuckDB works especially well for analytics because it doesn't need to treat every query like a traditional row-by-row transactional database operation.
+Create a test suite of at least 20 real questions based on our actual schema.
 
-If your table has 70 columns but a chart needs:
+Cover:
 
-severity
+- simple counts
+- filters
+- distinct values
+- date ranges
+- grouping
+- top-N
+- multiple filters
+- aliases
+- fuzzy/business terminology
+- cross-table joins
+- follow-up questions
+- ambiguous questions
+- questions where no data exists
+- attempted write operation
 
-count
+Examples should be created only after inspecting the actual database.
 
-you should conceptually be doing work only around what is needed.
+For every question capture:
 
-DuckDB and Parquet can take advantage of projection pushdown so unnecessary columns are not read for relevant analytical queries. DuckDB can also push filters down and skip irrelevant portions of Parquet files using metadata.
+question
+→ context selected
+→ SQL generated
+→ retries
+→ result
+→ final answer
 
-This is another reason to avoid requests that blindly retrieve:
-
-everything.
-
----
-
-# 16. Think Carefully About Parquet
-
-If you have huge historical datasets, Parquet can be extremely useful.
-
-For example:
-
-2024 server history
-
-2025 server history
-
-2026 server history.
-
-DuckDB can directly query Parquet efficiently and use filtering/projection optimizations. For workloads with lots of repeated joins and queries, DuckDB's own guidance says loading data into DuckDB may outperform querying Parquet directly; so the right choice depends on whether the data is archival or frequently queried.
-
-One possible model is:
-
-Current/high-use analytical data
-→ DuckDB tables
-
-Large historical/archive data
-→ Parquet
-
-DuckDB can query both.
-
-Don't move everything to Parquet just because it's large.
-
-Use it where it improves storage and scan behavior.
+Independently verify SQL/results where practical.
 
 ---
 
-# 17. Organize Large Historical Data Intelligently
+# 23. IMPORTANT QUALITY TEST
 
-Suppose you have five years of incident data.
+A chatbot saying:
 
-Most queries may be:
+"I found the table and executed SQL"
 
-this month
+does NOT mean it works.
 
-last month
+For each tested question evaluate:
 
-this quarter
+1. Did it understand the question correctly?
+2. Did it select the correct tables?
+3. Did it select the correct fields?
+4. Did it resolve values correctly?
+5. Were joins correct?
+6. Was SQL valid?
+7. Was the result correct?
+8. Did the final answer faithfully represent the result?
+9. Did it avoid guessing?
+10. Was latency reasonable?
 
-this year.
-
-You don't want the engine repeatedly scanning irrelevant historical data.
-
-Organizing data around commonly filtered dimensions such as time can help reduce unnecessary reading.
-
-For Parquet workloads, DuckDB can use row-group metadata and partitioning to skip data that cannot satisfy a filter.
-
-### Example
-
-Query:
-
-June 2026 incidents.
-
-The engine should avoid doing meaningful work against:
-
-2019
-
-2020
-
-2021
-
-etc.
-
-The architecture should make irrelevant history cheap to ignore.
+Produce a pass/fail summary.
 
 ---
 
-# 18. Don't Add Indexes Everywhere
+# 24. TEST CONVERSATIONAL FOLLOW-UPS
 
-Coming from traditional databases, it's tempting to think:
+Test context such as:
 
-"More indexes = faster."
+User:
+"How many production servers are there?"
 
-Not necessarily with DuckDB.
+Then:
 
-DuckDB already maintains zonemap-style metadata and can skip irrelevant data ranges. Explicit ART indexes are mainly useful for certain highly selective equality/IN lookups and don't generally speed aggregation, sorting, or joins. They also consume resources and have tradeoffs.
+"How many of those are Red Hat?"
 
-So don't tell your colleague:
+Then:
 
-"index every filter field."
+"Only show ones with critical vulnerabilities."
 
-Instead:
+Then:
 
-measure actual slow interactions
+"What are the top applications among them?"
 
-then optimize those.
+The chatbot should understand the conversational narrowing without losing the underlying filters.
 
----
+Do not simply concatenate entire chat history into every prompt.
 
-# 19. Data Ordering Can Matter
-
-A surprisingly useful DuckDB optimization is keeping frequently filtered data somewhat ordered.
-
-For example:
-
-timestamps.
-
-If records are reasonably ordered by time, DuckDB's zonemaps can more effectively skip irrelevant blocks.
-
-DuckDB documents that ordered columns can improve compression and allow more effective block skipping for selective filters.
-
-### Example
-
-You constantly query:
-
-last 7 days.
-
-If the date column is naturally organized chronologically, the database may avoid reading large older portions.
-
-Again:
-
-don't reorganize everything blindly.
-
-But it's something worth testing for your heavy filters.
+Use compact structured conversation state where practical.
 
 ---
 
-# 20. Make Repeated Tiny Queries Cheap
+# 25. FINAL RESULT I WANT
 
-Analytics UI actions often produce small repeated queries.
+When finished I should be able to open:
+
+`http://localhost:<POC_PORT>`
+
+and ask questions about our actual data.
 
 Examples:
 
-list environments
+"How many servers do we have?"
 
-list severity values
+"How many production Red Hat servers are there?"
 
-count filtered rows
+"What were the incidents in June?"
 
-get first 100 rows.
+"Which applications have the most critical vulnerabilities?"
 
-DuckDB supports prepared statements, which can avoid repeating some query planning work for frequently executed queries with different parameters; its documentation notes they're especially useful for repeatedly run small queries.
+"What environment has the highest vulnerability count?"
 
-Conceptually:
+"What changed compared with last month?"
 
-same analytical operation
-
-different filter value.
-
-Example:
-
-Environment = PROD
-
-Environment = UAT
-
-Environment = DEV.
-
-The application shouldn't unnecessarily rediscover everything each time.
+Only answer questions supported by the actual available data.
 
 ---
 
-# 21. Don't Block the Entire Interface With One Slow Component
+# 26. FINAL REPORT
 
-Imagine the vulnerabilities chart requires a more expensive calculation.
+After the POC is running, give me:
 
-That should not prevent the user from:
+## Endpoint
+The local URL.
 
-scrolling the server table
+## Architecture
+A simple diagram of the actual running components.
 
-opening another filter
+## Wren Components Used
+Exactly what Wren pieces are being used.
 
-reading available KPIs.
+## Wren Components Ignored
+What we did not need.
 
-Each analytical component should have its own loading state.
+## Internal LLM
+How our existing LLM API was connected.
 
-### Bad
+## DuckDB
+How the existing database was connected.
 
-Whole page:
+## Metadata / Context
+How schema and semantic understanding works.
 
-LOADING...
+## Agent Loop
+How question → context → SQL → execute → repair → answer works.
 
-### Better
+## Performance
+Average timing for representative questions.
 
-Server count: ready.
+## Accuracy
+Results of the 20-question test.
 
-Environment chart: ready.
+## Dependencies
+Everything newly required.
 
-Vulnerability trend: calculating...
+## Licensing
+Which Wren code/components were used and their verified licenses.
 
-Table: ready.
+## Limitations
+What still fails.
 
-The user can continue working.
+## Recommendation
 
-This contributes massively to the "native" feeling you're looking for.
+Tell me whether we should:
 
----
+A. Integrate these selected Wren core pieces into Javi.
 
-# 22. Use Optimistic UI Where Safe
+B. Borrow the architecture but implement a smaller internal equivalent.
 
-Some interactions can appear instantaneous before the analytical result finishes.
+C. Stop using Wren because the useful part is still too heavy.
 
-Example:
-
-User clicks:
-
-PROD.
-
-The filter chip can immediately show:
-
-PROD ✓
-
-Then the affected charts update when the query completes.
-
-Don't make the filter itself wait for the database.
-
-This makes the interface feel responsive.
-
----
-
-# 23. Keep Filter State Consistent Across the Dashboard
-
-Qlik's interaction model is powerful partly because selections influence the analytical view consistently.
-
-For your system:
-
-If user selects:
-
-Environment = PROD
-
-every relevant component should understand that same filter.
-
-Then:
-
-OS = Red Hat
-
-becomes:
-
-PROD AND Red Hat.
-
-Then:
-
-Severity = Critical
-
-becomes:
-
-PROD AND Red Hat AND Critical.
-
-You should have one clear analytical selection state.
-
-Otherwise each chart ends up maintaining its own filter logic and the system becomes slow, inconsistent, and difficult to maintain.
+Base that recommendation on the POC evidence.
 
 ---
 
-# 24. Make Drill-Down Natural
+# MOST IMPORTANT INSTRUCTION
 
-Don't show maximum detail immediately.
+Do not turn this into another giant platform installation.
 
-Example:
+I already have:
 
-Chart:
+- my analytics application
+- DuckDB
+- data
+- frontend
+- backend
+- internal LLM
+- Javi
 
-Critical vulnerabilities by application.
+I am evaluating Wren only for the difficult intelligence layer:
 
-User clicks:
+**understand my data deeply → retrieve the right context → reason about the question → run the right SQL → recover from mistakes → answer accurately from real evidence.**
 
-Payments.
-
-Now show:
-
-Payments vulnerabilities.
-
-Then clicks:
-
-CVE category.
-
-Then:
-
-affected servers.
-
-This keeps initial calculations small while still allowing deep exploration.
-
-The philosophy is:
-
-summary first
-
-detail on demand.
-
----
-
-# 25. Handle Large Exports Differently From Interactive Tables
-
-If someone wants:
-
-"Export all 2 million rows"
-
-that's different from:
-
-"let me explore these rows."
-
-Don't make the interactive grid load 2 million rows simply because exporting exists.
-
-Interactive experience:
-
-small pages/windows.
-
-Export:
-
-backend creates the large result separately.
-
-That keeps Excel-like exploration responsive.
-
----
-
-# 26. Watch Result Size, Not Just Query Time
-
-Suppose DuckDB executes a query in:
-
-200 ms.
-
-Sounds excellent.
-
-But then returns:
-
-750 MB JSON.
-
-The user still experiences a slow application.
-
-Measure:
-
-database time
-
-serialization time
-
-network transfer
-
-browser parsing time
-
-render time.
-
-The slow part may not be DuckDB at all.
-
-This is extremely important when diagnosing performance.
-
----
-
-# 27. Add Performance Budgets
-
-Don't optimize based on:
-
-"It feels kind of slow."
-
-Define goals.
-
-For example:
-
-Filter interaction:
-target <300–500 ms for common operations.
-
-Search:
-initial response within a short perceptual threshold.
-
-Grid scrolling:
-no visible frame drops.
-
-Dashboard initial useful content:
-very fast.
-
-Heavy charts:
-allowed slightly longer but asynchronous.
-
-The exact thresholds should be based on your infrastructure and users.
-
-Once you have targets, your colleague can find which operations violate them.
-
----
-
-# 28. Instrument Every Interaction
-
-For every important interaction, capture:
-
-user action
-
-backend request
-
-DuckDB execution time
-
-rows scanned if available
-
-rows returned
-
-response payload size
-
-frontend processing time
-
-render time.
-
-Then you can distinguish:
-
-DuckDB problem
-
-from
-
-API problem
-
-from
-
-frontend problem.
-
-Without this, you'll spend weeks guessing.
-
----
-
-# 29. Profile Slow DuckDB Queries Instead of Guessing
-
-If a particular query is slow, inspect why.
-
-DuckDB recommends studying query plans and looking for issues such as ineffective filter pushdown, poor join order, or unexpectedly huge intermediate results.
-
-The important philosophy:
-
-Don't globally optimize DuckDB.
-
-Find:
-
-"this particular interaction takes 4 seconds"
-
-and investigate that query.
-
----
-
-# 30. Control Memory and Concurrency
-
-DuckDB can work on data larger than memory and spill some analytical operations to disk, but machine memory, threads, storage speed, and query type still matter. DuckDB recommends considering available memory per thread and notes that SSD/NVMe storage helps larger-than-memory workloads.
-
-For your engine this means:
-
-don't assume:
-
-more threads = always faster.
-
-If many users are running analytics simultaneously, uncontrolled parallelism can actually make everything worse.
-
-The production environment should be tested with realistic concurrent use.
-
----
-
-# 31. Avoid One Giant Dashboard
-
-A Qlik-like dashboard with:
-
-35 charts
-
-10 giant tables
-
-20 filters
-
-all calculating immediately
-
-will eventually become heavy.
-
-Prioritize.
-
-Maybe the first view contains:
-
-4 KPIs
-
-3 important charts
-
-one table.
-
-More detailed analysis can live in tabs or drill-down views.
-
-Qlik itself warns that app/sheet complexity—large tables, many calculations, complex expressions, and numerous objects—can hurt performance.
-
----
-
-# 32. Make Filters Cheap to Populate
-
-Dropdowns themselves can become expensive.
-
-Imagine:
-
-Hostname dropdown.
-
-3 million unique hostnames.
-
-Don't send 3 million dropdown options.
-
-Instead:
-
-searchable typeahead.
-
-User enters:
-
-pay-
-
-then query relevant hostnames.
-
-For low-cardinality values:
-
-Environment:
-PROD
-DEV
-UAT
-
-load them directly.
-
-So distinguish:
-
-LOW CARDINALITY FILTER
-
-from
-
-HIGH CARDINALITY SEARCH.
-
----
-
-# 33. Treat Different Columns Differently
-
-Not every column should behave the same way.
-
-Examples:
-
-Environment:
-small dropdown.
-
-Severity:
-small dropdown.
-
-Date:
-range selector.
-
-Hostname:
-search/typeahead.
-
-Incident count:
-numeric range.
-
-Application:
-searchable selection.
-
-This improves both usability and performance.
-
----
-
-# 34. Preload Small Metadata
-
-Some information is tiny and frequently needed:
-
-environment values
-
-severity values
-
-available years
-
-regions
-
-table definitions.
-
-Load/cache those early.
-
-Then when the user opens a filter, it feels instant.
-
-Don't query tiny stable metadata every single click.
-
----
-
-# 35. Preserve the User's Current Result
-
-When the user changes a filter, don't necessarily blank the table immediately.
-
-Keep the previous result visible while the updated result arrives, but clearly indicate refresh.
-
-This avoids visual flashing:
-
-table
-
-→ blank
-
-→ loading
-
-→ table.
-
-Instead:
-
-old table briefly remains
-
-→ subtle updating state
-
-→ new table.
-
-This small UX detail contributes a lot to perceived smoothness.
-
----
-
-# 36. Build an Analytics Query Layer
-
-Long-term, I wouldn't want every chart independently constructing arbitrary database behavior.
-
-The page should think in analytical concepts such as:
-
-metric
-
-dimension
-
-filters
-
-sort
-
-range
-
-limit.
-
-Example:
-
-Metric:
-vulnerability_count
-
-Dimension:
-application
-
-Filters:
-environment = PROD
-severity = CRITICAL
-
-That analytical request gets translated into DuckDB work.
-
-This makes:
-
-charts
-
-tables
-
-Javi
-
-filters
-
-all use the same data logic.
-
-And this is particularly valuable for you because Javi can eventually consume the same analytics layer instead of inventing totally independent database logic.
-
----
-
-# 37. Javi and the Dashboard Should Share the Same Truth
-
-This is very important for your project.
-
-If the dashboard says:
-
-Critical vulnerabilities = 18,421
-
-and Javi answers:
-
-18,397
-
-users lose trust immediately.
-
-Ideally:
-
-Dashboard analytics
-
-and
-
-Javi analytics
-
-use the same:
-
-semantic definitions
-
-filters
-
-metrics
-
-data sources.
-
-Then asking Javi:
-
-"How many critical vulnerabilities are there?"
-
-should use the same underlying definition that produces the dashboard card.
-
-This will also reduce the problems you've been having with Javi.
-
----
-
-# 38. Build a Semantic Layer Over DuckDB
-
-As the system grows, define business concepts once.
-
-Example:
-
-Production Server
-
-means:
-
-environment = PROD.
-
-Critical Vulnerability
-
-means:
-
-severity = CRITICAL.
-
-Active Incident
-
-means whatever your business rule actually defines.
-
-Then:
-
-charts
-
-tables
-
-Javi
-
-exports
-
-all use the same definition.
-
-This is one of the most important things for consistency as your analytics engine grows.
-
----
-
-# 39. Design for Progressive Scale
-
-You don't need to prematurely build for billions of rows.
-
-Instead test tiers.
-
-100K rows
-
-1M rows
-
-10M rows
-
-50M rows
-
-100M rows.
-
-At each tier measure:
-
-page load
-
-common filter
-
-search
-
-sort
-
-grouping
-
-top-N
-
-chart aggregation
-
-large join.
-
-Then you'll know where the architecture actually starts degrading.
-
----
-
-# 40. Final Target Architecture
-
-Conceptually your analytics engine should behave like this:
-
-DATA SOURCES
-
-↓
-
-INGESTION / NORMALIZATION
-
-↓
-
-DUCKDB + OPTIONAL PARQUET HISTORY
-
-↓
-
-SEMANTIC / ANALYTICS LAYER
-
-↓
-
-QUERY + CACHE LAYER
-
-↓
-
-small result sets
-
-↓
-
-UI
-
-The UI then contains:
-
-virtualized tables
-
-aggregated charts
-
-shared filters
-
-incremental loading
-
-cancellable requests
-
-independent loading states.
-
-And Javi sits alongside the UI:
-
-Javi
-
-↓
-
-same semantic/analytics layer
-
-↓
-
-DuckDB/tools
-
-↓
-
-verified result
-
-↓
-
-answer.
-
-The frontend should never become the analytics engine itself.
-
-DuckDB should do the heavy analytical work.
-
-The browser should primarily:
-
-display
-
-interact
-
-request
-
-render.
-
----
-
-# Recommended Optimization Order
-
-Don't try all of this simultaneously.
-
-I would optimize in this order:
-
-1. Make sure raw large datasets are never sent to the browser.
-2. Add/verify table virtualization.
-3. Move filtering/sorting/searching fully into DuckDB.
-4. Make charts use aggregated results only.
-5. Add request cancellation and search debouncing.
-6. Add shared dashboard filter state.
-7. Add caching for common analytical results.
-8. Precompute expensive frequently-used metrics.
-9. Separate summary queries from detail queries.
-10. Add proper performance instrumentation.
-11. Profile slow DuckDB queries.
-12. Optimize large historical storage/Parquet where useful.
-13. Add semantic/business metric definitions.
-14. Make Javi consume that same analytical layer.
-15. Load-test the complete experience at progressively larger dataset sizes.
-
-The final question your colleague should ask for every feature is:
-
-**"If this table becomes 100 million rows tomorrow, how much additional work does the browser have to do?"**
-
-The best answer is:
-
-**almost none.**
+Build the smallest possible POC that proves whether Wren materially improves that problem.
